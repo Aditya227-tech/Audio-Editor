@@ -7,24 +7,35 @@ function TrimmerPage() {
   const [trimEnd, setTrimEnd] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
   const [duration, setDuration] = useState(0);
+  const [isWaveformReady, setIsWaveformReady] = useState(false);
   const waveformRef = useRef(null);
   const wavesurferRef = useRef(null);
   const timelineRef = useRef(null);
 
-  // New state for timeline interaction
   const [isDraggingStart, setIsDraggingStart] = useState(false);
   const [isDraggingEnd, setIsDraggingEnd] = useState(false);
 
-  const handleFileUpload = (event) => {
-    const file = event.target.files[0];
-    setAudioFile(file);
+  // Initialize WaveSurfer on component mount
+  useEffect(() => {
+    return () => {
+      if (wavesurferRef.current) {
+        wavesurferRef.current.destroy();
+      }
+    };
+  }, []);
 
-    // Initialize WaveSurfer
+  const initializeWaveSurfer = async (file) => {
+    // Destroy existing instance if it exists
     if (wavesurferRef.current) {
       wavesurferRef.current.destroy();
     }
 
-    wavesurferRef.current = WaveSurfer.create({
+    // Reset states
+    setIsWaveformReady(false);
+    setIsPlaying(false);
+
+    // Create new WaveSurfer instance
+    const wavesurfer = WaveSurfer.create({
       container: waveformRef.current,
       waveColor: 'violet',
       progressColor: 'purple',
@@ -32,24 +43,42 @@ function TrimmerPage() {
       height: 100,
     });
 
-    wavesurferRef.current.loadBlob(file);
-
-    // Set up event listeners
-    wavesurferRef.current.on('ready', () => {
-      const audioDuration = wavesurferRef.current.getDuration();
+    // Set up event listeners before loading the file
+    wavesurfer.on('ready', () => {
+      const audioDuration = wavesurfer.getDuration();
       setDuration(audioDuration);
       setTrimEnd(audioDuration);
-
-      // Create timeline with markers
+      setIsWaveformReady(true);
       createTimeline(audioDuration);
     });
 
-    wavesurferRef.current.on('audioprocess', () => {
+    wavesurfer.on('audioprocess', () => {
       updateTimelineMarkers();
     });
+
+    wavesurfer.on('error', (err) => {
+      console.error('WaveSurfer error:', err);
+    });
+
+    // Store the instance
+    wavesurferRef.current = wavesurfer;
+
+    // Load the file
+    try {
+      await wavesurfer.loadBlob(file);
+    } catch (error) {
+      console.error('Error loading audio file:', error);
+    }
   };
 
-  // Updated function to create interactive timeline
+  const handleFileUpload = async (event) => {
+    const file = event.target.files[0];
+    if (!file) return;
+
+    setAudioFile(file);
+    await initializeWaveSurfer(file);
+  };
+
   const createTimeline = (totalDuration) => {
     const timeline = timelineRef.current;
     if (!timeline) return;
@@ -87,7 +116,6 @@ function TrimmerPage() {
     endMarker.addEventListener('mousedown', startDragEnd);
   };
 
-  // Drag handlers for timeline markers
   const startDragStart = (e) => {
     e.preventDefault();
     setIsDraggingStart(true);
@@ -136,7 +164,6 @@ function TrimmerPage() {
     document.removeEventListener('mouseup', stopDragEnd);
   };
 
-  // Update timeline marker positions
   const updateTimelineMarkers = () => {
     const timeline = timelineRef.current;
     if (!timeline) return;
@@ -175,8 +202,8 @@ function TrimmerPage() {
       audioContext.decodeAudioData(e.target.result, (buffer) => {
         // Trim the audio buffer
         const trimmedBuffer = audioContext.createBuffer(
-          buffer.numberOfChannels, 
-          Math.floor((trimEnd - trimStart) * buffer.sampleRate), 
+          buffer.numberOfChannels,
+          Math.floor((trimEnd - trimStart) * buffer.sampleRate),
           buffer.sampleRate
         );
 
@@ -208,7 +235,6 @@ function TrimmerPage() {
     reader.readAsArrayBuffer(audioFile);
   };
 
-  // Utility function to convert AudioBuffer to WAV
   function bufferToWave(abuffer, len) {
     const numOfChan = abuffer.numberOfChannels;
     const length = len * numOfChan * 2 + 44;
@@ -237,8 +263,8 @@ function TrimmerPage() {
       const viewData = new Int16Array(buffer, offset, len);
 
       for (let j = 0; j < len; j++) {
-        viewData[j] = Math.max(-1, Math.min(1, channelData[j])) < 0 
-          ? channelData[j] * 0x8000 
+        viewData[j] = Math.max(-1, Math.min(1, channelData[j])) < 0
+          ? channelData[j] * 0x8000
           : channelData[j] * 0x7FFF;
       }
 
@@ -256,19 +282,19 @@ function TrimmerPage() {
 
   // Effect to update timeline when start/end times change
   useEffect(() => {
-    if (audioFile) {
+    if (audioFile && isWaveformReady) {
       updateTimelineMarkers();
     }
-  }, [trimStart, trimEnd, duration]);
+  }, [trimStart, trimEnd, duration, audioFile, isWaveformReady]);
 
   return (
     <div className="container mx-auto p-4">
       <h1 className="text-2xl font-bold mb-4">Audio Trimmer</h1>
 
-      <input 
-        type="file" 
-        accept="audio/*" 
-        onChange={handleFileUpload} 
+      <input
+        type="file"
+        accept="audio/*"
+        onChange={handleFileUpload}
         className="mb-4"
       />
 
@@ -276,56 +302,57 @@ function TrimmerPage() {
         <div>
           <div ref={waveformRef} className="mb-4"></div>
 
-          {/* New Timeline Component */}
-          <div 
-            ref={timelineRef} 
-            className="w-full h-8 mb-4"
-          >
-            {/* Timeline will be dynamically populated */}
-          </div>
-
-          <div className="flex items-center space-x-4 mb-4">
-            <button 
-              onClick={togglePlayPause}
-              className="bg-blue-500 text-white p-2 rounded hover:bg-blue-600"
-            >
-              {isPlaying ? 'Pause' : 'Play'}
-            </button>
-            <span>Duration: {duration.toFixed(2)} seconds</span>
-          </div>
-
-          <div className="flex space-x-4 mb-4">
-            <div>
-              <label className="block mb-2">Start Time (seconds)</label>
-              <input 
-                type="number" 
-                value={trimStart}
-                min="0"
-                max={duration}
-                onChange={(e) => setTrimStart(parseFloat(e.target.value))}
-                className="border p-2 w-full"
+          {isWaveformReady && (
+            <>
+              <div
+                ref={timelineRef}
+                className="w-full h-8 mb-4"
               />
-            </div>
-            <div>
-              <label className="block mb-2">End Time (seconds)</label>
-              <input 
-                type="number" 
-                value={trimEnd}
-                min={trimStart}
-                max={duration}
-                onChange={(e) => setTrimEnd(parseFloat(e.target.value))}
-                className="border p-2 w-full"
-              />
-            </div>
-          </div>
 
-          <button 
-            onClick={handleTrim}
-            className="bg-green-500 text-white p-2 rounded hover:bg-green-600"
-            disabled={trimStart >= trimEnd}
-          >
-            Trim and Download Audio
-          </button>
+              <div className="flex items-center space-x-4 mb-4">
+                <button
+                  onClick={togglePlayPause}
+                  className="bg-blue-500 text-white p-2 rounded hover:bg-blue-600"
+                >
+                  {isPlaying ? 'Pause' : 'Play'}
+                </button>
+                <span>Duration: {duration.toFixed(2)} seconds</span>
+              </div>
+
+              <div className="flex space-x-4 mb-4">
+                <div>
+                  <label className="block mb-2">Start Time (seconds)</label>
+                  <input
+                    type="number"
+                    value={trimStart}
+                    min="0"
+                    max={duration}
+                    onChange={(e) => setTrimStart(parseFloat(e.target.value))}
+                    className="border p-2 w-full"
+                  />
+                </div>
+                <div>
+                  <label className="block mb-2">End Time (seconds)</label>
+                  <input
+                    type="number"
+                    value={trimEnd}
+                    min={trimStart}
+                    max={duration}
+                    onChange={(e) => setTrimEnd(parseFloat(e.target.value))}
+                    className="border p-2 w-full"
+                  />
+                </div>
+              </div>
+
+              <button
+                onClick={handleTrim}
+                className="bg-green-500 text-white p-2 rounded hover:bg-green-600"
+                disabled={trimStart >= trimEnd}
+              >
+                Trim and Download Audio
+              </button>
+            </>
+          )}
         </div>
       )}
     </div>
