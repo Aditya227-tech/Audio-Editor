@@ -8,14 +8,16 @@ function TrimmerPage() {
   const [isPlaying, setIsPlaying] = useState(false);
   const [duration, setDuration] = useState(0);
   const [isWaveformReady, setIsWaveformReady] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
   const waveformRef = useRef(null);
   const wavesurferRef = useRef(null);
   const timelineRef = useRef(null);
+  const fileRef = useRef(null);
 
   const [isDraggingStart, setIsDraggingStart] = useState(false);
   const [isDraggingEnd, setIsDraggingEnd] = useState(false);
 
-  // Initialize WaveSurfer on component mount
+  // Cleanup on unmount
   useEffect(() => {
     return () => {
       if (wavesurferRef.current) {
@@ -25,49 +27,78 @@ function TrimmerPage() {
   }, []);
 
   const initializeWaveSurfer = async (file) => {
-    // Destroy existing instance if it exists
-    if (wavesurferRef.current) {
-      wavesurferRef.current.destroy();
-    }
-
-    // Reset states
-    setIsWaveformReady(false);
-    setIsPlaying(false);
-
-    // Create new WaveSurfer instance
-    const wavesurfer = WaveSurfer.create({
-      container: waveformRef.current,
-      waveColor: 'violet',
-      progressColor: 'purple',
-      responsive: true,
-      height: 100,
-    });
-
-    // Set up event listeners before loading the file
-    wavesurfer.on('ready', () => {
-      const audioDuration = wavesurfer.getDuration();
-      setDuration(audioDuration);
-      setTrimEnd(audioDuration);
-      setIsWaveformReady(true);
-      createTimeline(audioDuration);
-    });
-
-    wavesurfer.on('audioprocess', () => {
-      updateTimelineMarkers();
-    });
-
-    wavesurfer.on('error', (err) => {
-      console.error('WaveSurfer error:', err);
-    });
-
-    // Store the instance
-    wavesurferRef.current = wavesurfer;
-
-    // Load the file
     try {
-      await wavesurfer.loadBlob(file);
+      setIsLoading(true);
+
+      // Ensure cleanup of previous instance
+      if (wavesurferRef.current) {
+        wavesurferRef.current.destroy();
+        wavesurferRef.current = null;
+      }
+
+      // Reset states
+      setIsWaveformReady(false);
+      setIsPlaying(false);
+      setTrimStart(0);
+      setTrimEnd(0);
+
+      // Create new WaveSurfer instance
+      const wavesurfer = WaveSurfer.create({
+        container: waveformRef.current,
+        waveColor: 'violet',
+        progressColor: 'purple',
+        responsive: true,
+        height: 100,
+        normalize: true,
+        backend: 'WebAudio',
+      });
+
+      // Set up event listeners
+      wavesurfer.on('ready', () => {
+        const audioDuration = wavesurfer.getDuration();
+        setDuration(audioDuration);
+        setTrimEnd(audioDuration);
+        setIsWaveformReady(true);
+        setIsLoading(false);
+        createTimeline(audioDuration);
+      });
+
+      wavesurfer.on('error', (err) => {
+        console.error('WaveSurfer error:', err);
+        setIsLoading(false);
+      });
+
+      // Store the instance
+      wavesurferRef.current = wavesurfer;
+
+      // Load the file using a promise wrapper
+      return new Promise((resolve, reject) => {
+        try {
+          // Create a blob URL if we have a File object
+          const fileUrl = file instanceof File ? URL.createObjectURL(file) : file;
+
+          wavesurfer.load(fileUrl);
+
+          wavesurfer.on('ready', () => {
+            if (file instanceof File) {
+              URL.revokeObjectURL(fileUrl);
+            }
+            resolve();
+          });
+
+          wavesurfer.on('error', (err) => {
+            if (file instanceof File) {
+              URL.revokeObjectURL(fileUrl);
+            }
+            reject(err);
+          });
+        } catch (error) {
+          reject(error);
+        }
+      });
     } catch (error) {
-      console.error('Error loading audio file:', error);
+      console.error('Error initializing WaveSurfer:', error);
+      setIsLoading(false);
     }
   };
 
@@ -75,33 +106,45 @@ function TrimmerPage() {
     const file = event.target.files[0];
     if (!file) return;
 
-    setAudioFile(file);
-    await initializeWaveSurfer(file);
+    try {
+      // Store file reference
+      fileRef.current = file;
+      setAudioFile(file);
+
+      // Initialize WaveSurfer with the file
+      await initializeWaveSurfer(file);
+    } catch (error) {
+      console.error('Error handling file upload:', error);
+      setIsLoading(false);
+      // Reset file input
+      if (event.target) {
+        event.target.value = '';
+      }
+    }
   };
 
   const createTimeline = (totalDuration) => {
     const timeline = timelineRef.current;
     if (!timeline) return;
 
-    // Clear any existing content
+    // Clear existing content
     timeline.innerHTML = '';
 
-    // Display total duration on the timeline
+    // Create duration display
     const durationDisplay = document.createElement('div');
     durationDisplay.textContent = `Total Duration: ${totalDuration.toFixed(2)} seconds`;
     durationDisplay.className = 'text-sm text-gray-600 mb-2';
     timeline.appendChild(durationDisplay);
 
-    // Create timeline base
+    // Create timeline track
     const timelineTrack = document.createElement('div');
     timelineTrack.className = 'relative w-full h-8 bg-gray-200 rounded-full';
 
-    // Create start marker
+    // Create markers
     const startMarker = document.createElement('div');
     startMarker.className = 'absolute left-0 top-0 w-4 h-8 bg-blue-500 rounded-l-full cursor-pointer';
     startMarker.style.transform = 'translateX(0%)';
 
-    // Create end marker
     const endMarker = document.createElement('div');
     endMarker.className = 'absolute right-0 top-0 w-4 h-8 bg-red-500 rounded-r-full cursor-pointer';
     endMarker.style.transform = 'translateX(100%)';
@@ -111,11 +154,12 @@ function TrimmerPage() {
     timelineTrack.appendChild(endMarker);
     timeline.appendChild(timelineTrack);
 
-    // Add event listeners for dragging
+    // Add drag event listeners
     startMarker.addEventListener('mousedown', startDragStart);
     endMarker.addEventListener('mousedown', startDragEnd);
   };
 
+  // Drag handling functions
   const startDragStart = (e) => {
     e.preventDefault();
     setIsDraggingStart(true);
@@ -137,8 +181,10 @@ function TrimmerPage() {
     const percent = Math.max(0, Math.min(1, (e.clientX - timelineRect.left) / timelineRect.width));
     const newStart = percent * duration;
 
-    setTrimStart(newStart);
-    updateTimelineMarkers();
+    if (newStart < trimEnd) {
+      setTrimStart(newStart);
+      updateTimelineMarkers();
+    }
   };
 
   const dragEnd = (e) => {
@@ -148,8 +194,10 @@ function TrimmerPage() {
     const percent = Math.max(0, Math.min(1, (e.clientX - timelineRect.left) / timelineRect.width));
     const newEnd = percent * duration;
 
-    setTrimEnd(newEnd);
-    updateTimelineMarkers();
+    if (newEnd > trimStart) {
+      setTrimEnd(newEnd);
+      updateTimelineMarkers();
+    }
   };
 
   const stopDragStart = () => {
@@ -194,7 +242,6 @@ function TrimmerPage() {
   const handleTrim = () => {
     if (!audioFile || !wavesurferRef.current) return;
 
-    // Create an audio context for trimming
     const audioContext = new AudioContext();
     const reader = new FileReader();
 
@@ -229,6 +276,9 @@ function TrimmerPage() {
         link.href = url;
         link.download = 'trimmed_audio.wav';
         link.click();
+
+        // Cleanup
+        URL.revokeObjectURL(url);
       });
     };
 
@@ -247,7 +297,7 @@ function TrimmerPage() {
     writeUTFBytes(view, 8, 'WAVE');
     writeUTFBytes(view, 12, 'fmt ');
     view.setUint32(16, 16, true);
-    view.setUint16(20, 1, true); // Format (PCM)
+    view.setUint16(20, 1, true);
     view.setUint16(22, numOfChan, true);
     view.setUint32(24, abuffer.sampleRate, true);
     view.setUint32(28, abuffer.sampleRate * 2 * numOfChan, true);
@@ -280,7 +330,6 @@ function TrimmerPage() {
     }
   }
 
-  // Effect to update timeline when start/end times change
   useEffect(() => {
     if (audioFile && isWaveformReady) {
       updateTimelineMarkers();
@@ -297,6 +346,10 @@ function TrimmerPage() {
         onChange={handleFileUpload}
         className="mb-4"
       />
+
+      {isLoading && (
+        <div className="text-blue-500 mb-4">Loading audio file...</div>
+      )}
 
       {audioFile && (
         <div>
