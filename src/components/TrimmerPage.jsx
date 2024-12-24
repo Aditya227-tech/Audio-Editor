@@ -9,38 +9,48 @@ function TrimmerPage() {
   const [duration, setDuration] = useState(0);
   const [isWaveformReady, setIsWaveformReady] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState(null);
+  const [isDraggingStart, setIsDraggingStart] = useState(false);
+  const [isDraggingEnd, setIsDraggingEnd] = useState(false);
   const waveformRef = useRef(null);
   const wavesurferRef = useRef(null);
   const timelineRef = useRef(null);
   const fileRef = useRef(null);
 
-  const [isDraggingStart, setIsDraggingStart] = useState(false);
-  const [isDraggingEnd, setIsDraggingEnd] = useState(false);
-
   // Cleanup on unmount
   useEffect(() => {
     return () => {
-      if (wavesurferRef.current) {
-        wavesurferRef.current.destroy();
-      }
+      cleanupWaveSurfer();
     };
   }, []);
+
+  const cleanupWaveSurfer = () => {
+    if (wavesurferRef.current) {
+      wavesurferRef.current.unAll(); // Remove all event listeners
+      wavesurferRef.current.destroy();
+      wavesurferRef.current = null;
+    }
+  };
+
+  const resetState = () => {
+    setIsWaveformReady(false);
+    setIsPlaying(false);
+    setTrimStart(0);
+    setTrimEnd(0);
+    setDuration(0);
+    setError(null);
+  };
 
   const initializeWaveSurfer = async (file) => {
     try {
       setIsLoading(true);
+      setError(null);
 
-      // Ensure cleanup of previous instance
-      if (wavesurferRef.current) {
-        wavesurferRef.current.destroy();
-        wavesurferRef.current = null;
-      }
+      // Ensure complete cleanup
+      await cleanupWaveSurfer();
 
-      // Reset states
-      setIsWaveformReady(false);
-      setIsPlaying(false);
-      setTrimStart(0);
-      setTrimEnd(0);
+      // Reset all states
+      resetState();
 
       // Create new WaveSurfer instance
       const wavesurfer = WaveSurfer.create({
@@ -53,52 +63,50 @@ function TrimmerPage() {
         backend: 'WebAudio',
       });
 
-      // Set up event listeners
-      wavesurfer.on('ready', () => {
-        const audioDuration = wavesurfer.getDuration();
-        setDuration(audioDuration);
-        setTrimEnd(audioDuration);
-        setIsWaveformReady(true);
-        setIsLoading(false);
-        createTimeline(audioDuration);
-      });
-
-      wavesurfer.on('error', (err) => {
-        console.error('WaveSurfer error:', err);
-        setIsLoading(false);
-      });
-
-      // Store the instance
+      // Store the instance first
       wavesurferRef.current = wavesurfer;
 
-      // Load the file using a promise wrapper
+      // Set up event listeners before loading the file
       return new Promise((resolve, reject) => {
-        try {
-          // Create a blob URL if we have a File object
-          const fileUrl = file instanceof File ? URL.createObjectURL(file) : file;
-
-          wavesurfer.load(fileUrl);
-
-          wavesurfer.on('ready', () => {
-            if (file instanceof File) {
-              URL.revokeObjectURL(fileUrl);
-            }
-            resolve();
+        const setupComplete = new Promise((setupResolve) => {
+          wavesurfer.once('ready', () => {
+            const audioDuration = wavesurfer.getDuration();
+            setDuration(audioDuration);
+            setTrimEnd(audioDuration);
+            setIsWaveformReady(true);
+            setIsLoading(false);
+            createTimeline(audioDuration);
+            setupResolve();
           });
 
-          wavesurfer.on('error', (err) => {
-            if (file instanceof File) {
-              URL.revokeObjectURL(fileUrl);
-            }
+          wavesurfer.once('error', (err) => {
+            console.error('WaveSurfer error:', err);
+            setError('Error loading audio file. Please try again.');
+            setIsLoading(false);
             reject(err);
           });
-        } catch (error) {
-          reject(error);
-        }
+        });
+
+        // Create a blob URL if we have a File object
+        const fileUrl = file instanceof File ? URL.createObjectURL(file) : file;
+
+        // Load the file after setting up event listeners
+        wavesurfer.load(fileUrl);
+
+        // Cleanup URL after setup is complete
+        setupComplete.finally(() => {
+          if (file instanceof File) {
+            URL.revokeObjectURL(fileUrl);
+          }
+        });
+
+        resolve(setupComplete);
       });
     } catch (error) {
       console.error('Error initializing WaveSurfer:', error);
+      setError('Failed to initialize audio processor. Please try again.');
       setIsLoading(false);
+      throw error;
     }
   };
 
@@ -107,6 +115,9 @@ function TrimmerPage() {
     if (!file) return;
 
     try {
+      // Reset the error state
+      setError(null);
+
       // Store file reference
       fileRef.current = file;
       setAudioFile(file);
@@ -115,11 +126,18 @@ function TrimmerPage() {
       await initializeWaveSurfer(file);
     } catch (error) {
       console.error('Error handling file upload:', error);
+      setError('Failed to process audio file. Please try again.');
       setIsLoading(false);
+      resetState();
+
       // Reset file input
       if (event.target) {
         event.target.value = '';
       }
+
+      // Clear file references
+      fileRef.current = null;
+      setAudioFile(null);
     }
   };
 
@@ -347,6 +365,10 @@ function TrimmerPage() {
         className="mb-4"
       />
 
+      {error && (
+        <div className="text-red-500 mb-4">{error}</div>
+      )}
+
       {isLoading && (
         <div className="text-blue-500 mb-4">Loading audio file...</div>
       )}
@@ -393,7 +415,7 @@ function TrimmerPage() {
                     max={duration}
                     onChange={(e) => setTrimEnd(parseFloat(e.target.value))}
                     className="border p-2 w-full"
-                  />
+                />
                 </div>
               </div>
 
